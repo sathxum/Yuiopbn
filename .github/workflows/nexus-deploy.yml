@@ -1,0 +1,100 @@
+name: Nexus Hermes Native Deployment
+on: 
+  push:
+    branches: [ main, master ]
+    paths:
+      - '.github/workflows/nexus-deploy.yml'
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+      
+    - name: Setup System Dependencies
+      run: |
+        echo -e "\e[35m╔════════════════════════════════════╗\e[0m"
+        echo -e "\e[35m║   NEXUS HERMES NATIVE DEPLOY v2.6  ║\e[0m"
+        echo -e "\e[35m╚════════════════════════════════════╝\e[0m"
+        sudo apt-get update
+        sudo apt-get install -y curl git ca-certificates ffmpeg openssl jq
+        curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+        sudo apt-get install -y nodejs
+        
+    - name: Install Tunneling Protocol
+      run: |
+        curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cf
+        chmod +x cf
+        sudo mv cf /usr/local/bin/cloudflared
+        
+    - name: Setup Hermes Credentials
+      run: |
+        mkdir -p ~/.hermes
+        chmod 755 ~/.hermes
+        DASHBOARD_SECRET=$(openssl rand -base64 32)
+        API_SERVER_KEY=$(openssl rand -hex 32)
+        echo "API_SERVER_KEY=$API_SERVER_KEY" >> $GITHUB_ENV
+        
+        printf '%s\n' \
+          "HERMES_DASHBOARD_BASIC_AUTH_USERNAME=Sinket" \
+          "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD=Admin@123" \
+          "HERMES_DASHBOARD_BASIC_AUTH_SECRET=$DASHBOARD_SECRET" \
+          "API_SERVER_ENABLED=true" \
+          "API_SERVER_HOST=0.0.0.0" \
+          "API_SERVER_KEY=$API_SERVER_KEY" \
+          "API_SERVER_CORS_ORIGINS=*" \
+          "HERMES_DASHBOARD=1" \
+          "HERMES_DASHBOARD_HOST=0.0.0.0" \
+          "HERMES_DASHBOARD_PORT=9119" \
+          > ~/.hermes/.env
+        chmod 600 ~/.hermes/.env
+        
+    - name: Install Hermes Native
+      run: |
+        curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
+        
+    - name: Start Hermes Native Agent
+      run: |
+        export PATH="$HOME/.hermes/bin:$PATH"
+        export $(grep -v '^#' ~/.hermes/.env | xargs)
+        
+        echo "Starting Hermes Dashboard..."
+        nohup hermes dashboard --port 9119 --host 0.0.0.0 > /tmp/dash.log 2>&1 &
+        sleep 5
+        
+    - name: Start Assigned Tunnel
+      run: |
+        echo "Starting Cloudflare tunnel..."
+        nohup cloudflared tunnel --url http://127.0.0.1:9119 > /tmp/tunnel.log 2>&1 &
+        for i in $(seq 1 60); do
+          sleep 2
+          TUNNEL_URL=$(grep -oE "https://[a-zA-Z0-9-]+\\.trycloudflare\\.com" /tmp/tunnel.log | head -1 || true)
+          if [ -n "$TUNNEL_URL" ]; then
+            echo "TUNNEL_URL=$TUNNEL_URL" >> $GITHUB_ENV
+            break
+          fi
+        done
+        
+    - name: Output Connection Details
+      run: |
+        echo -e "\e[32m[SUCCESS] Native Tunnel Established!\e[0m"
+        echo -e "\e[35m======================================\e[0m"
+        echo -e "\e[35m    HERMES AGENT DASHBOARD ACCESS     \e[0m"
+        echo -e "\e[35m======================================\e[0m"
+        echo -e "\e[36mCloudflare URL : ${{ env.TUNNEL_URL }}\e[0m"
+        echo -e "\e[36mUsername       : Sinket\e[0m"
+        echo -e "\e[36mPassword       : Admin@123\e[0m"
+        echo -e "\e[36mAPI Key        : ${{ env.API_SERVER_KEY }}\e[0m"
+        echo -e "\e[36mGateway Port   : 8642\e[0m"
+        echo -e "\e[35m======================================\e[0m"
+        
+    - name: Keep Alive Monitor
+      run: |
+        echo "Hermes is active for 6 hours max..."
+        for i in {360..1}; do
+            sleep 60
+        done
